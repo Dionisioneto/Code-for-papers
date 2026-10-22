@@ -67,12 +67,11 @@ gen.joint.cure.dgompertz = function(n, alpha, gammas, sd.fr, betas.fixed, sd.e1,
   # survival submodel / frailty
   frailty = rnorm(n=n, mean=0, sd=sd.fr)
   
-  # Agora utilizando os elementos do argumento gammas
   eta = cbind(1, b_int, b_slo, binXs) %*% gammas 
   
   mu = exp(eta + frailty)
   
-  # Probabilidade de cura (Lembrete: alpha deve ser estritamente negativo na dGompertz!)
+  # Probability of cure (must be negative for defective Gompertz)
   p_par = exp(mu/alpha) 
   
   # Passando o max_cen para a função
@@ -80,9 +79,6 @@ gen.joint.cure.dgompertz = function(n, alpha, gammas, sd.fr, betas.fixed, sd.e1,
   colnames(survDat) = c("time", "delta")
   survDat = data.frame(id=1:n, survDat, binXs, b_int, b_slo, p_par)
   
-  # ---------------------------------------------------------
-  # CORREÇÃO: Truncar os dados longitudinais pelo tempo de sobrevida
-  # ---------------------------------------------------------
   
   # 1. Traz o tempo de sobrevivência/censura para o dataset longitudinal
   longDat = merge(longDat, survDat[, c("id", "time")], by="id")
@@ -191,6 +187,10 @@ mdjoint = joint(formSurv = formsurv,
                 family=c("gaussian"), dataLong=list(longdata),
                 timeVar="timej", assoc=c("SRE_ind"), 
                 corLong=F,run=T, control=ctrl_stan_like)
+
+
+
+
 
 summary(mdjoint, sdcor=TRUE)
 

@@ -18,7 +18,7 @@ data=joineRML::epileptic.qol
 data$time <- data$time/365.25
 data$with.time <- data$with.time/365.25
 
-epileptic.l <- data[, -c(2,4,9)]
+epileptic.l = data[, -c(2,4,9)]
 epileptic.s = data[!duplicated(data$id), c(1:3, 9)] # filtering the survival time and censoring
 
 ## 2. [Descriptive analysis]
@@ -51,24 +51,177 @@ mean(epileptic.l$anxiety,na.rm=T);var(epileptic.l$anxiety,na.rm=T)
 mean(epileptic.l$aep,na.rm=T);var(epileptic.l$aep,na.rm=T) # breaks the assumption
 mean(epileptic.l$depress,na.rm=T);var(epileptic.l$depress,na.rm=T)
 
+library(dplyr)
+library(ggplot2)
+
+# Calculando estatísticas intra-sujeito para o biomarcador 'aep' (como exemplo)
+# Adicionando 'trt' ao agrupamento
+disp_intra_trt <- epileptic.l %>%
+  group_by(trt, id) %>% 
+  summarise(
+    n_medidas = n(),
+    media_aep = mean(depress, na.rm = TRUE),
+    var_aep = var(depress, na.rm = TRUE),
+    .groups = "drop" # Remove o agrupamento após o sumário
+  ) %>%
+  filter(n_medidas > 1) %>%
+  mutate(indice_dispersao = var_aep / media_aep)
+
+# Calculando o resumo numérico do índice de dispersão por tratamento
+# resumo_dispersao <- disp_intra_trt %>%
+#   group_by(trt) %>%
+#   summarise(
+#     pacientes = n(),
+#     media_indice = mean(indice_dispersao, na.rm = TRUE),
+#     mediana_indice = median(indice_dispersao, na.rm = TRUE)
+#   )
+
+# print(resumo_dispersao)
+
+
+disp_intra_trt_anx <- epileptic.l %>%
+  group_by(trt, id) %>% 
+  summarise(
+    n_medidas = n(),
+    media_anx = mean(anxiety, na.rm = TRUE),
+    var_anx = var(anxiety, na.rm = TRUE),
+    .groups = "drop" 
+  ) %>%
+  filter(n_medidas > 1) %>%
+  mutate(
+    indice_dispersao = var_anx / media_anx,
+    diff_abs = abs(var_anx - media_anx) # Criando o módulo da diferença
+  )
+
+
+ggplot(disp_intra_trt_anx, aes(x = as.factor(trt), y = diff_abs, fill = as.factor(trt))) +
+  geom_boxplot(alpha = 0.5, outlier.shape = NA) + 
+  geom_jitter(width = 0.2, alpha = 0.6, size = 1.5, color = "darkgray") +
+  labs(
+    x = "Treatment",
+    y = "|Variance - Mean| intra-subject for Anxiety"
+  ) +
+  scale_fill_manual(values = c("darkred", "steelblue")) +
+  scale_y_continuous(breaks = seq(0, 100, by = 10)) +
+  theme_bw(base_size = 14) +
+  theme(
+    legend.position = "none",
+    strip.text   = element_text(size = 22),
+    panel.grid.minor = element_blank(),
+    axis.title.x = element_text(size = 22, margin = margin(t = 15)), 
+    axis.title.y = element_text(size = 22,  margin = margin(r = 15)), 
+    
+    axis.text.x = element_text(size = 20, color = "black"), 
+    axis.text.y = element_text(size = 20, color = "black"),
+    
+    axis.ticks = element_line(linewidth = 1, color = "black")
+  )
+
+######
+
+disp_intra_trt_dep <- epileptic.l %>%
+  group_by(trt, id) %>% 
+  summarise(
+    n_medidas = n(),
+    media_dep = mean(depress, na.rm = TRUE),
+    var_dep = var(depress, na.rm = TRUE),
+    .groups = "drop" 
+  ) %>%
+  filter(n_medidas > 1) %>%
+  mutate(
+    indice_dispersao = var_dep / media_dep,
+    diff_abs = abs(var_dep - media_dep) # Criando o módulo da diferença
+  )
+
+
+ggplot(disp_intra_trt_dep, aes(x = as.factor(trt), y = diff_abs, fill = as.factor(trt))) +
+  geom_boxplot(alpha = 0.5, outlier.shape = NA) + 
+  geom_jitter(width = 0.2, alpha = 0.6, size = 1.5, color = "darkgray") +
+  labs(
+    x = "Treatment",
+    y = "|Variance - Mean| intra-subject for Depression"
+  ) +
+  scale_fill_manual(values = c("darkred", "steelblue")) +
+  scale_y_continuous(breaks = seq(0, 120, by = 10)) +
+  theme_bw(base_size = 14) +
+  theme(
+    legend.position = "none",
+    strip.text   = element_text(size = 22),
+    panel.grid.minor = element_blank(),
+    axis.title.x = element_text(size = 22, margin = margin(t = 15)), 
+    axis.title.y = element_text(size = 22,  margin = margin(r = 15)), 
+    
+    axis.text.x = element_text(size = 20, color = "black"), 
+    axis.text.y = element_text(size = 20, color = "black"),
+    
+    axis.ticks = element_line(linewidth = 1, color = "black")
+  )
 
 
 
 ## 3. [Inla estimation of the survival] 
-survpart = inla(inla.surv(with.time, with.status2) ~ trt,
-                data = epileptic.s,
-                family = "dgompertzsurv",
-                control.inla = list(cmin = 0),
-                control.compute=list(config=TRUE),
-                control.family=list(hyper=list(alpha=list(param=c(0, 0.01)))),
-                verbose = TRUE)
+
+ctrl = list(
+  int.strategy = "ccd", ## "eb" for velocity and ccd to generate posterior samples
+  cfg = TRUE,
+  cmin = 0,
+  
+  priorFixed = list(mean = 0, prec = 0.01,
+                    mean.intercept = 0, prec.intercept = 0.01),
+  priorAssoc = list(mean = 0, prec = 0.01),
+  
+  priorSRE_ind = list(mean = 0, prec = 0.01),
+  
+  # Wishart for var-cov of random effects.
+  priorRandom = list(r = 5, R = 1), 
+  
+  baselineHyper = list(
+    alpha = list(prior = "normal", param = c(0, 0.01), initial = -1)
+  )
+)
+
+
+set.seed(127)
+survpart = joint(formSurv = inla.surv(with.time, with.status2) ~ trt, 
+                         control=ctrl,
+                         basRisk = "dgompertzsurv", 
+                         id = "id", 
+                         dataSurv = epileptic.s)
+
+summary(survpart, sdcor=T)
 
 survpart$summary.fixed
-survpart$summary.hyperpar ## defective model
+survpart$summary.hyperpar## defective model
 
 
-## 4. [Fitting two longitudinal biomarkers]
+## [Fitting two longitudinal biomarkers]
 ## (2L) anxiety & depress 
+
+formsurv = inla.surv(with.time, with.status2) ~ trt
+form_anxiety = anxiety ~ time + trt + (1+time|id)
+form_depress = depress ~ time + trt + (1+time|id)
+
+head(epileptic.l)
+
+set.seed(123)
+joint_dgompertz = joint(formSurv = formsurv,
+                        basRisk = "dgompertzsurv",
+                        id = "id", dataSurv = epileptic.s,
+                        formLong=list(form_anxiety, form_depress),
+                        family=c("poisson","poisson"), 
+                        dataLong=list(epileptic.l,epileptic.l),
+                        timeVar="time", assoc=c("SRE_ind","SRE_ind"),
+                        corLong=T,run=T, control=ctrl)
+
+
+sumamry(joint_dgompertz)
+
+
+
+
+
+
+
 
 shared_long3 = joint(formSurv=inla.surv(with.time, with.status2) ~ trt,
                      dataSurv=epileptic.s, basRisk="weibullsurv", NbasRisk=50,
