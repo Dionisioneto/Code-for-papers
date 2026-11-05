@@ -133,9 +133,34 @@ res.matrix = array(data=NA, dim = c(niter, length(parameters)*4, length(nsamples
 censoring_values = array(data=NA, dim = c(niter, 1, length(nsamples)),
                          dimnames=list(1:niter, "censoring",nsamples))
 
+
+
+ctrl_inlajoint = list(
+  int.strategy = "eb", ## ccd to generate posterior samples, eb if you want velocity
+  cfg = TRUE,
+  cmin = 0,
+  
+  priorFixed = list(mean = 0, prec = 0.01,
+                    mean.intercept = 0, prec.intercept = 0.01),
+  priorAssoc = list(mean = 0, prec = 0.01),
+  
+  priorSRE_ind = list(mean = 0, prec = 0.01),
+  
+  # r (2 random effects + 1) for the degress of freedom
+  priorRandom = list(r = 3, R = 1),
+  
+  # A higher uncertainty beacause this parameter palys a big role of identifying cure fraction
+  baselineHyper = list(
+    alpha = list(prior = "normal", param = c(0, 0.01), initial = 0)
+  )
+)
+
+
+save_points = seq(50,1000,by=50)
+
 for(j in 1:length(nsamples)){
   for (i in 1:niter) {
-    set.seed(546+i)
+    
     print(paste("Monte Carlo realization: ", i, ", sample size:", nsamples[j]))
     
     ## Gerar os dados
@@ -148,85 +173,74 @@ for(j in 1:length(nsamples)){
     longdata = data$longdata
     
     
-    # Ajuste do modelo de sobrevivência
-    modS = inla(inla.surv(time, delta) ~ binXs + b_int + b_slo,
-                data = survdata,
-                family = "dgompertzsurv",
-                control.inla = list(cmin = 0),
-                control.fixed = list(prec.intercept = 1),
-                control.family = list(hyper = list(alpha = list(param = c(0, 0.001)))))
-    #summary(modS)
+    
+    # Fitting the joint model
+    form_y1=biomarker ~ timej + cts + bin + (1 + timej | id)
+    formsurv=inla.surv(time, delta) ~ binXs 
+    
+    mdjoint = joint(formSurv = formsurv,
+                    basRisk = "dgompertzsurv", 
+                    id = "id", dataSurv = survdata,
+                    formLong=list(form_y1),
+                    family=c("poisson"), dataLong=list(longdata),
+                    timeVar="timej", assoc=c("SRE_ind"), 
+                    control=ctrl_inlajoint,
+                    corLong=F,run=T)
+    
+    # recuperando os valores dos parametros
+    alpha_hat = summary(mdjoint, sdcor = TRUE)$SurvEff[[1]][1,]
+    gamma0_hat = mdjoint$summary.fixed[1,] 
+    gammas_hat = summary(mdjoint, sdcor = TRUE)$AssocLS
+    psi_hat = summary(mdjoint, sdcor = TRUE)$SurvEff[[1]][3,]
+    
+    ## Fixed effects
+    betas_hat = summary(mdjoint, sdcor = TRUE)$FixedEff[[1]][1:3,]
+    
+    ## sd of random effects and correlation
+    sds_reff_hat = summary(mdjoint, sdcor = TRUE)$ReffList[[1]][1:2,]
+    rho_hat = summary(mdjoint, sdcor = TRUE)$ReffList[[1]][3,]
+    
+    means_hat = c(alpha_hat[,"mean"], gamma0_hat[,"mean"], gammas_hat[,"mean"], psi_hat[,"mean"], betas_hat[,"mean"], sds_reff_hat[,"mean"], rho_hat["mean"])
+    names(means_hat)=names(parameters)
+    length(means_hat); length(parameters)
     
     
-    # Ajuste do modelo conjunto
-    modLS_0 = joint(formSurv = inla.surv(time, delta) ~ binXs,
-                     dataSurv = survdata, basRisk = "weibullsurv", NbasRisk = 50,
-                     formLong = biomarker ~ timej + cts + bin + (1 + timej | id),
-                     family = c("poisson"), dataLong = longdata, id = "id",
-                     timeVar = "time", assoc = c("SRE_ind"),
-                     run = FALSE, control = list(int.strategy = "eb",
-                                                 priorSRE_ind=list(mean=0,prec=1),
-                                                 priorFixed=list(mean.intercept=0,prec.intercept=0.1,
-                                                                 mean=0, prec=0.1)))
+    sds_hat = c(alpha_hat[,"sd"], gamma0_hat[,"sd"], gammas_hat[,"sd"], psi_hat[,"sd"], betas_hat[,"sd"], sds_reff_hat[,"sd"], rho_hat["sd"]); names(sds_hat)=names(parameters)
+    lw_ci_hat =  c(alpha_hat[,"0.025quant"], gamma0_hat[,"0.025quant"], gammas_hat[,"0.025quant"], psi_hat[,"0.025quant"], betas_hat[,"0.025quant"], sds_reff_hat[,"0.025quant"], rho_hat["0.025quant"]); names(lw_ci_hat)=names(parameters)
+    up_ci_hat =  c(alpha_hat[,"0.975quant"], gamma0_hat[,"0.975quant"], gammas_hat[,"0.975quant"], psi_hat[,"0.975quant"], betas_hat[,"0.975quant"], sds_reff_hat[,"0.975quant"], rho_hat["0.975quant"]); names(up_ci_hat)=names(parameters)
     
-    modLS_0$.args$family = c("poisson", "dgompertzsurv")
-    modLS_0$.args$control.family[[2]] = modS$.args$control.family
-    modLS_0$.args$control.inla$cmin = 0
-    modLS = joint.run(modLS_0, class = "inla")
-
+    bias = (means_hat-parameters) 
+    squared_error = (means_hat-parameters)^2 
     
-    # sample of random effects
-    MC_samples = inla.iidkd.sample(10^4, modLS, "IDIntercept_L1", return.cov = TRUE)
-    ref_vals = t(sapply(MC_samples, function(Sigma) {
-      cov_xy = Sigma[1, 2]
-      sd_x = sqrt(Sigma[1, 1])
-      sd_y = sqrt(Sigma[2, 2])
-      cor = cov_xy / (sd_x * sd_y)
-      c(sd_int = sd_x, sd_slo = sd_y, rho = cor)
-    }))
-    
-    sd_int_est = ref_vals[,"sd_int"]
-    sd_slo_est = ref_vals[,"sd_slo"]
-    sd_rho_est = ref_vals[,"rho"]
+    check_ic = (parameters > lw_ci_hat) & (parameters < up_ci_hat)
     
     res = rbind(
-      modLS$summary.hyperpar[1, c(1, 2, 3, 5)],
-      modLS$summary.fixed[1, c(1, 2, 3, 5)],
-      modLS$summary.hyperpar[5:6, c(1, 2, 3, 5)],
-      modLS$summary.fixed[2, c(1, 2, 3, 5)],
-      modLS$summary.fixed[-c(1,2), c(1, 2, 3, 5)],
-      c(mean(sd_int_est), sd(sd_int_est), quantile(sd_int_est, probs = c(0.025, 0.975))),
-      c(mean(sd_slo_est), sd(sd_slo_est), quantile(sd_slo_est, probs = c(0.025, 0.975))),
-      c(mean(sd_rho_est), sd(sd_rho_est), quantile(sd_rho_est, probs = c(0.025, 0.975)))
-    )
-    
-    check_ci = 1 * ((res$`0.025quant` <= parameters) & (res$`0.975quant` >= parameters))
-    res$cp = check_ci
-    res = cbind(parameters, res)
-    bias = (res$mean - parameters)
+      means_hat,
+      squared_error,
+      bias,
+      check_ic)
     
     # Saving results
-    res.matrix[i, 1:12, j] = res$mean
-    res.matrix[i, 13:24, j] = res$sd
-    res.matrix[i, 25:36, j] = bias
-    res.matrix[i, 37:48, j] = res$cp
+    res.matrix[i, 1:11, j] = res[1,]
+    res.matrix[i, 12:22, j] = res[2,]
+    res.matrix[i, 23:33, j] = res[3,]
+    res.matrix[i, 34:44, j] = res[4,]
+    
     censoring_values[i, , j] = 1 - mean(survdata$delta)
     
-    if (i == niter) {
-      write.csv2(res.matrix[,,j], file = paste("joint_model_res33_", "rep_", niter, "_n_", nsamples[j], ".csv", sep = ""))
-      write.csv2(censoring_values[,,j], file = paste("joint_model_cens33_", "rep_", niter, "_n_", nsamples[j], ".csv", sep = ""))
+    
+
+    if (i %in% save_points) {
+      write.csv2(res.matrix[,,j], file = paste("joint_model_res_", "rep_", niter, "_n_", nsamples[j], ".csv", sep = ""))
+      write.csv2(censoring_values[,,j], file = paste("joint_model_cens_", "rep_", niter, "_n_", nsamples[j], ".csv", sep = ""))
     }
   }
 }
 
 
-resumo = as.matrix(colMeans(res.matrix[,,2]))
 
-parameters
-resumo[rownames(resumo)=="mean"]
-resumo[rownames(resumo)=="sd"]
-resumo[rownames(resumo)=="bias"]
-resumo[rownames(resumo)=="cp"]
+
+
 
 
 #res500=read.csv2("joint_model_res22_cen2_rep_1000_n_500.csv"); res500=res500[,-1]

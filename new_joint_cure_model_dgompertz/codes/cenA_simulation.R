@@ -16,11 +16,12 @@ gen.cure.gompertz = function(n,a,b,p=0) {
   }
   
   t_finite = ifelse(t==Inf,0,t)
-  u2 = rexp(n=n,1)
+  u2 = runif(n=n,0,20)
   t2 = pmin(t,u2)
   delta = ifelse(t<u2,1,0)
   return(as.data.frame(cbind(time=t2,delta)))
 }
+
 
 
 ## [Function to generate longitudinal and survival data from defective Gompertz data]
@@ -40,7 +41,7 @@ gen.joint.cure.dgompertz = function(n, alpha, gammas, betas.fixed,
   b_slo = MVnorm[,2]
   b_sloY = rep(b_slo, each=nmesindiv) # b1
   
-  binXs = rbinom(n, 1, 0.75) # binary covariate 1
+  binXs = rbinom(n, 1, 0.85) # binary covariate 1
   
   bin = rep(rbinom(n, 1, 0.5), each=nmesindiv)
   #ctsX = round(runif(n, 0, 1), 5) # continuous covariate
@@ -62,12 +63,10 @@ gen.joint.cure.dgompertz = function(n, alpha, gammas, betas.fixed,
   longDat = data.frame(id=as.integer(idY), timej, biomarker, bin)#, cts)
   
   
+  
   eta = cbind(1, b_int, b_slo, binXs) %*% gammas 
   
   mu = exp(eta)
-  
-  # Probability of cure (must be negative for defective Gompertz)
-  p_par = exp(mu/alpha) 
   
   survDat = gen.cure.gompertz(n=n, a=alpha, b=mu) 
   colnames(survDat) = c("time", "delta")
@@ -84,12 +83,13 @@ gen.joint.cure.dgompertz = function(n, alpha, gammas, betas.fixed,
   
   # Organize individuals and time
   longDat = longDat[order(longDat$id, longDat$timej), ]
-  rownames(longDat) = NULL # reseta os índices das linhas
+  rownames(longDat) = NULL 
   
   # ---------------------------------------------------------
   
   return(list(survdata=survDat, longdata=longDat))
 }
+
 
 ctrl_inlajoint = list(
   int.strategy = "eb", ## ccd to generate posterior samples, eb if you want velocity
@@ -113,19 +113,18 @@ ctrl_inlajoint = list(
 
 
 
-beta0=1# intercept
-beta1=-1 # slope
-beta2=0.5 # continuous covariate
-#beta3=0.5 # binary covariate
+beta0=2.5# intercept
+beta1=-0.1 # slope
+beta2=0.1 # binary covariate
 
 #betas.fixed0=c(beta0, beta1, beta2, beta3)
 betas.fixed0=c(beta0, beta1, beta2)
-sd.int0 = 0.3
-sd.slo0 = 0.3
-rho0 = -0.35
+sd.int0 = 0.4
+sd.slo0 = 0.4
+rho0 = -0.3
 
-alpha0=0.15 ##defective
-gamma0=log(2.5);gamma1=1.4;gamma2=1.2;gamma3=0.5
+alpha0=0.2 ##defective
+gamma0=-0.1;gamma1=0.3;gamma2=0.5;gamma3=-0.75
 gammas0 = c(gamma0,gamma1,gamma2,gamma3)
 
 parameters = c(alpha0,gammas0,betas.fixed0,sd.int0,sd.slo0,rho0)
@@ -134,9 +133,10 @@ names(parameters)=c("alpha","gamma0","gamma1", "gamma2","psi1",
                     "sd.int","sd.slo","rho")
 
 
-
 nsamples = c(100,300,500,1000)
-niter = 2
+
+#nsamples = c(500)
+niter = 1000
 
 
 res.matrix = array(data=NA, dim = c(niter, length(parameters)*4, length(nsamples)),
@@ -147,22 +147,21 @@ res.matrix = array(data=NA, dim = c(niter, length(parameters)*4, length(nsamples
 censoring_values = array(data=NA, dim = c(niter, 1, length(nsamples)),
                          dimnames=list(1:niter, "censoring",nsamples))
 
-save_points = seq(50,1000,by=50)
 
+save_points = seq(50,1000,by=50)
 
 
 for(j in 1:length(nsamples)){
   for (i in 1:niter) {
-    set.seed(546+i)
+
     print(paste("Monte Carlo realization: ", i, ", sample size:", nsamples[j]))
     
     ## Gerar os dados
-    data_gen = gen.joint.cure.dgompertz(n=nsamples[j],alpha=alpha0,
-                                    gammas=gammas0,
-                                   betas.fixed=betas.fixed0,
-                                   sd.int=sd.int0,sd.slope=sd.slo0,
-                                   rho=rho0,
-                                   gap=0.5*(1/12), followup=2.5)
+    data_gen = gen.joint.cure.dgompertz(n=nsamples[j],alpha=alpha0,gammas=gammas0,
+                                        betas.fixed=betas.fixed0,
+                                        sd.int=sd.int0,sd.slope=sd.slo0,
+                                        rho=rho0,
+                                        gap=0.5*(1/12), followup=4)
     
     survdata = data_gen$survdata
     longdata = data_gen$longdata
@@ -194,26 +193,19 @@ for(j in 1:length(nsamples)){
     sds_reff_hat = summary(mdjoint, sdcor = TRUE)$ReffList[[1]][1:2,]
     rho_hat = summary(mdjoint, sdcor = TRUE)$ReffList[[1]][3,]
     
-    
     means_hat = c(alpha_hat[,"mean"], gamma0_hat[,"mean"], gammas_hat[,"mean"], psi_hat[,"mean"], betas_hat[,"mean"], sds_reff_hat[,"mean"], rho_hat["mean"])
-    
     names(means_hat)=names(parameters)
+    length(means_hat); length(parameters)
+    
     
     sds_hat = c(alpha_hat[,"sd"], gamma0_hat[,"sd"], gammas_hat[,"sd"], psi_hat[,"sd"], betas_hat[,"sd"], sds_reff_hat[,"sd"], rho_hat["sd"]); names(sds_hat)=names(parameters)
-    
     lw_ci_hat =  c(alpha_hat[,"0.025quant"], gamma0_hat[,"0.025quant"], gammas_hat[,"0.025quant"], psi_hat[,"0.025quant"], betas_hat[,"0.025quant"], sds_reff_hat[,"0.025quant"], rho_hat["0.025quant"]); names(lw_ci_hat)=names(parameters)
-    
     up_ci_hat =  c(alpha_hat[,"0.975quant"], gamma0_hat[,"0.975quant"], gammas_hat[,"0.975quant"], psi_hat[,"0.975quant"], betas_hat[,"0.975quant"], sds_reff_hat[,"0.975quant"], rho_hat["0.975quant"]); names(up_ci_hat)=names(parameters)
-    
-    
-    #lw_ci_hat; up_ci_hat
     
     bias = (means_hat-parameters) 
     squared_error = (means_hat-parameters)^2 
-
-    #sds_hat
-    check_ic = (parameters > lw_ci_hat) & (parameters < up_ci_hat)
     
+    check_ic = (parameters > lw_ci_hat) & (parameters < up_ci_hat)
     
     res = rbind(
       means_hat,
@@ -229,26 +221,23 @@ for(j in 1:length(nsamples)){
     
     censoring_values[i, , j] = 1 - mean(survdata$delta)
     
-    if (i %in% save_points) {
-      write.csv2(res.matrix[,,j], file = paste("cenA_jm_", "rep_", niter, "_n_", nsamples[j], ".csv", sep = ""))
-      write.csv2(censoring_values[,,j], file = paste("cenA_jm_cenoring_", "rep_", niter, "_n_", nsamples[j], ".csv", sep = ""))
-    }
+    
+    write.csv2(res.matrix[,,j], file = paste("cenA_jm_", "rep_", niter, "_n_", nsamples[j], ".csv", sep = ""))
+    write.csv2(censoring_values[,,j], file = paste("cenA_jm_cenoring_", "rep_", niter, "_n_", nsamples[j], ".csv", sep = ""))
+    
+    # if (i %in% save_points) {
+    #   write.csv2(res.matrix[,,j], file = paste("cenA_jm_", "rep_", niter, "_n_", nsamples[j], ".csv", sep = ""))
+    #   write.csv2(censoring_values[,,j], file = paste("cenA_jm_cenoring_", "rep_", niter, "_n_", nsamples[j], ".csv", sep = ""))
+    # }
   }
 }
 
 
 
+res.matrix[,,1]
 
-
-
-
-
-
-
-
-
-
-
+colMeans(res.matrix[,,1])
+colMeans(res.matrix[,,2])
 
 
 
